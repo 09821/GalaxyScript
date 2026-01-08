@@ -1,0 +1,1096 @@
+-- Galaxy Hub v1.0
+-- by Branzz / @galaxyscripts8
+
+-- Serviços
+local Players = game:GetService("Players")
+local RunService = game:GetService("RunService")
+local UserInputService = game:GetService("UserInputService")
+local TweenService = game:GetService("TweenService")
+local StarterGui = game:GetService("StarterGui")
+local Workspace = game:GetService("Workspace")
+
+-- Player
+local player = Players.LocalPlayer
+local character = player.Character or player.CharacterAdded:Wait()
+local humanoid = character:WaitForChild("Humanoid")
+local rootPart = character:WaitForChild("HumanoidRootPart")
+
+-- Configurações de cores (tema suave roxo)
+local COLOR_PRIMARY = Color3.fromRGB(180, 140, 255)  -- Roxo suave
+local COLOR_SECONDARY = Color3.fromRGB(200, 160, 280)
+local COLOR_ACCENT = Color3.fromRGB(160, 120, 240)
+local COLOR_BACKGROUND = Color3.fromRGB(40, 30, 60)
+local COLOR_TEXT = Color3.fromRGB(240, 230, 255)
+local COLOR_BUTTON = Color3.fromRGB(70, 50, 90)
+local COLOR_ON = Color3.fromRGB(100, 255, 100)  -- Verde suave
+local COLOR_OFF = COLOR_BUTTON
+
+-- Sistema de proteções
+local antiRagdollEnabled = true
+local antiResetEnabled = true
+local antiKickEnabled = true
+local antiHealthLossEnabled = true
+
+-- Variáveis globais
+local mainGui, panelGui
+local mainVisible = true
+local panelVisible = false
+local markedPosition = nil
+local activeFunctions = {}
+local espInstances = {}
+local platforms = {}
+local hitboxExpanded = false
+local teleguidedActive = false
+local teleportTeleguidedActive = false
+local desyncV1Active = false
+local desyncV2Active = false
+local infiniteJumpActive = false
+local speedBoostActive = false
+local xrayActive = false
+local fpsBoostActive = false
+local espActive = false
+local clone = nil
+local flying = false
+local flightVelocity = 28
+local flightBodyVelocity, flightGyro
+
+-- Funções de proteção
+local function setupProtections()
+    -- Anti Ragdoll
+    if antiRagdollEnabled then
+        Workspace:GetPropertyChangedSignal("Gravity"):Connect(function()
+            if Workspace.Gravity < 196.2 then
+                Workspace.Gravity = 196.2
+            end
+        end)
+        
+        character.ChildAdded:Connect(function(child)
+            if child:IsA("BasePart") and child.Name == "Ragdoll" then
+                child:Destroy()
+            end
+        end)
+    end
+    
+    -- Anti Reset
+    if antiResetEnabled then
+        player.CharacterAdded:Connect(function(newChar)
+            if desyncV1Active or desyncV2Active then
+                return
+            end
+            
+            -- Impede reset não manual
+            local humanoid = newChar:WaitForChild("Humanoid")
+            humanoid.BreakJointsOnDeath = false
+            
+            task.wait(0.1)
+            if humanoid.Health <= 0 then
+                humanoid.Health = 100
+            end
+        end)
+    end
+    
+    -- Anti Health Loss
+    if antiHealthLossEnabled then
+        humanoid:GetPropertyChangedSignal("Health"):Connect(function()
+            if humanoid.Health < humanoid.MaxHealth then
+                humanoid.Health = humanoid.MaxHealth
+            end
+        end)
+    end
+    
+    -- Anti Kick (simples)
+    if antiKickEnabled then
+        local connection
+        connection = player.PlayerGui.ChildAdded:Connect(function(child)
+            if child:IsA("ScreenGui") and (child.Name:find("Kick") or child.Name:find("Error")) then
+                child:Destroy()
+            end
+        end)
+    end
+end
+
+-- Função para criar elementos arrastáveis
+local function makeDraggable(gui, dragHandle)
+    local dragging = false
+    local dragInput, dragStart, startPos
+    
+    dragHandle.InputBegan:Connect(function(input)
+        if input.UserInputType == Enum.UserInputType.MouseButton1 then
+            dragging = true
+            dragStart = input.Position
+            startPos = gui.Position
+            
+            input.Changed:Connect(function()
+                if input.UserInputState == Enum.UserInputState.End then
+                    dragging = false
+                end
+            end)
+        end
+    end)
+    
+    dragHandle.InputChanged:Connect(function(input)
+        if input.UserInputType == Enum.UserInputType.MouseMovement then
+            dragInput = input
+        end
+    end)
+    
+    UserInputService.InputChanged:Connect(function(input)
+        if dragging and input == dragInput then
+            local delta = input.Position - dragStart
+            gui.Position = UDim2.new(
+                startPos.X.Scale, 
+                startPos.X.Offset + delta.X,
+                startPos.Y.Scale,
+                startPos.Y.Offset + delta.Y
+            )
+        end
+    end)
+end
+
+-- Função para criar botão com toggle
+local function createToggleButton(parent, name, callback)
+    local button = Instance.new("TextButton")
+    button.Name = name
+    button.Text = name .. " [OFF]"
+    button.Size = UDim2.new(0.9, 0, 0, 35)
+    button.Position = UDim2.new(0.05, 0, 0, 0)
+    button.BackgroundColor3 = COLOR_BUTTON
+    button.TextColor3 = COLOR_TEXT
+    button.Font = Enum.Font.GothamSemibold
+    button.TextSize = 14
+    button.AutoButtonColor = true
+    button.Parent = parent
+    
+    local active = false
+    
+    button.MouseButton1Click:Connect(function()
+        active = not active
+        
+        if active then
+            button.Text = name .. " [ON]"
+            button.BackgroundColor3 = COLOR_ON
+        else
+            button.Text = name .. " [OFF]"
+            button.BackgroundColor3 = COLOR_OFF
+        end
+        
+        if callback then
+            callback(active)
+        end
+    end)
+    
+    return button
+end
+
+-- Criação da GUI principal
+local function createMainGUI()
+    mainGui = Instance.new("ScreenGui")
+    mainGui.Name = "GalaxyHubMain"
+    mainGui.ResetOnSpawn = false
+    mainGui.ZIndexBehavior = Enum.ZIndexBehavior.Sibling
+    
+    -- Círculo de acesso
+    local circleButton = Instance.new("ImageButton")
+    circleButton.Name = "CircleButton"
+    circleButton.Size = UDim2.new(0, 60, 0, 60)
+    circleButton.Position = UDim2.new(0, 20, 0.5, -30)
+    circleButton.BackgroundColor3 = COLOR_PRIMARY
+    circleButton.Image = "rbxassetid://0" -- Coloque o ID da imagem aqui
+    circleButton.ImageColor3 = COLOR_ACCENT
+    circleButton.AutoButtonColor = true
+    
+    -- Arredondar o círculo
+    local corner = Instance.new("UICorner")
+    corner.CornerRadius = UDim.new(1, 0)
+    corner.Parent = circleButton
+    
+    -- Container principal
+    local mainFrame = Instance.new("Frame")
+    mainFrame.Name = "MainFrame"
+    mainFrame.Size = UDim2.new(0, 300, 0, 400)
+    mainFrame.Position = UDim2.new(0, 100, 0.3, 0)
+    mainFrame.BackgroundColor3 = COLOR_BACKGROUND
+    mainFrame.BackgroundTransparency = 0.1
+    mainFrame.BorderSizePixel = 0
+    mainFrame.Visible = false
+    
+    -- Arredondar bordas
+    local mainCorner = Instance.new("UICorner")
+    mainCorner.CornerRadius = UDim.new(0.05, 0)
+    mainCorner.Parent = mainFrame
+    
+    -- Barra de título
+    local titleBar = Instance.new("Frame")
+    titleBar.Name = "TitleBar"
+    titleBar.Size = UDim2.new(1, 0, 0, 30)
+    titleBar.BackgroundColor3 = COLOR_PRIMARY
+    titleBar.BorderSizePixel = 0
+    
+    local titleCorner = Instance.new("UICorner")
+    titleCorner.CornerRadius = UDim.new(0.05, 0)
+    titleCorner.Parent = titleBar
+    
+    local title = Instance.new("TextLabel")
+    title.Name = "Title"
+    title.Text = "Galaxy Hub"
+    title.Size = UDim2.new(0.6, 0, 1, 0)
+    title.Position = UDim2.new(0.05, 0, 0, 0)
+    title.BackgroundTransparency = 1
+    title.TextColor3 = COLOR_TEXT
+    title.Font = Enum.Font.GothamBold
+    title.TextSize = 16
+    
+    -- Botões da barra de título
+    local buttonContainer = Instance.new("Frame")
+    buttonContainer.Name = "ButtonContainer"
+    buttonContainer.Size = UDim2.new(0.3, 0, 1, 0)
+    buttonContainer.Position = UDim2.new(0.7, 0, 0, 0)
+    buttonContainer.BackgroundTransparency = 1
+    
+    local minimizeButton = Instance.new("TextButton")
+    minimizeButton.Name = "MinimizeButton"
+    minimizeButton.Text = "-"
+    minimizeButton.Size = UDim2.new(0, 25, 0, 25)
+    minimizeButton.Position = UDim2.new(0, 0, 0.5, -12.5)
+    minimizeButton.BackgroundColor3 = Color3.fromRGB(255, 180, 0)
+    minimizeButton.TextColor3 = COLOR_TEXT
+    minimizeButton.Font = Enum.Font.GothamBold
+    
+    local maximizeButton = Instance.new("TextButton")
+    maximizeButton.Name = "MaximizeButton"
+    maximizeButton.Text = "+"
+    maximizeButton.Size = UDim2.new(0, 25, 0, 25)
+    maximizeButton.Position = UDim2.new(0, 30, 0.5, -12.5)
+    maximizeButton.BackgroundColor3 = Color3.fromRGB(0, 180, 255)
+    maximizeButton.TextColor3 = COLOR_TEXT
+    maximizeButton.Font = Enum.Font.GothamBold
+    maximizeButton.Visible = false
+    
+    local closeButton = Instance.new("TextButton")
+    closeButton.Name = "CloseButton"
+    closeButton.Text = "X"
+    closeButton.Size = UDim2.new(0, 25, 0, 25)
+    closeButton.Position = UDim2.new(0, 60, 0.5, -12.5)
+    closeButton.BackgroundColor3 = Color3.fromRGB(255, 50, 50)
+    closeButton.TextColor3 = COLOR_TEXT
+    closeButton.Font = Enum.Font.GothamBold
+    
+    -- Arredondar botões
+    for _, btn in pairs({minimizeButton, maximizeButton, closeButton}) do
+        local btnCorner = Instance.new("UICorner")
+        btnCorner.CornerRadius = UDim.new(0.3, 0)
+        btnCorner.Parent = btn
+    end
+    
+    -- Container de funções principais
+    local functionsFrame = Instance.new("Frame")
+    functionsFrame.Name = "FunctionsFrame"
+    functionsFrame.Size = UDim2.new(1, -20, 0, 320)
+    functionsFrame.Position = UDim2.new(0, 10, 0, 40)
+    functionsFrame.BackgroundTransparency = 1
+    
+    local scroll = Instance.new("ScrollingFrame")
+    scroll.Name = "Scroll"
+    scroll.Size = UDim2.new(1, 0, 1, 0)
+    scroll.BackgroundTransparency = 1
+    scroll.ScrollBarThickness = 5
+    scroll.ScrollingDirection = Enum.ScrollingDirection.Y
+    
+    local layout = Instance.new("UIListLayout")
+    layout.Padding = UDim.new(0, 5)
+    layout.SortOrder = Enum.SortOrder.LayoutOrder
+    
+    -- Funções principais
+    local function createMainFunction(name, desc, callback)
+        local frame = Instance.new("Frame")
+        frame.Size = UDim2.new(1, 0, 0, 60)
+        frame.BackgroundColor3 = COLOR_BUTTON
+        frame.BackgroundTransparency = 0.3
+        
+        local corner = Instance.new("UICorner")
+        corner.CornerRadius = UDim.new(0.1, 0)
+        corner.Parent = frame
+        
+        local titleLabel = Instance.new("TextLabel")
+        titleLabel.Text = name
+        titleLabel.Size = UDim2.new(1, -10, 0, 25)
+        titleLabel.Position = UDim2.new(0, 5, 0, 5)
+        titleLabel.BackgroundTransparency = 1
+        titleLabel.TextColor3 = COLOR_TEXT
+        titleLabel.Font = Enum.Font.GothamBold
+        titleLabel.TextSize = 14
+        titleLabel.TextXAlignment = Enum.TextXAlignment.Left
+        
+        local descLabel = Instance.new("TextLabel")
+        descLabel.Text = desc
+        descLabel.Size = UDim2.new(1, -10, 0, 25)
+        descLabel.Position = UDim2.new(0, 5, 0, 30)
+        descLabel.BackgroundTransparency = 1
+        descLabel.TextColor3 = COLOR_TEXT
+        descLabel.Font = Enum.Font.Gotham
+        descLabel.TextSize = 12
+        descLabel.TextXAlignment = Enum.TextXAlignment.Left
+        descLabel.TextTransparency = 0.3
+        
+        local button = Instance.new("TextButton")
+        button.Text = "Ativar"
+        button.Size = UDim2.new(0, 60, 0, 25)
+        button.Position = UDim2.new(1, -65, 0.5, -12.5)
+        button.BackgroundColor3 = COLOR_ACCENT
+        button.TextColor3 = COLOR_TEXT
+        button.Font = Enum.Font.GothamSemibold
+        
+        local btnCorner = Instance.new("UICorner")
+        btnCorner.CornerRadius = UDim.new(0.2, 0)
+        btnCorner.Parent = button
+        
+        button.MouseButton1Click:Connect(function()
+            if callback then
+                callback()
+            end
+        end)
+        
+        titleLabel.Parent = frame
+        descLabel.Parent = frame
+        button.Parent = frame
+        
+        return frame
+    end
+    
+    -- Adicionar funções principais
+    local xrayBtn = createMainFunction("X-Ray", "Torna partes transparentes", function()
+        xrayActive = not xrayActive
+        if xrayActive then
+            for _, part in pairs(Workspace:GetDescendants()) do
+                if part:IsA("BasePart") and part.Transparency < 1 then
+                    part.Transparency = 0.6
+                end
+            end
+        else
+            for _, part in pairs(Workspace:GetDescendants()) do
+                if part:IsA("BasePart") then
+                    part.Transparency = 0
+                end
+            end
+        end
+    end)
+    xrayBtn.Parent = scroll
+    
+    local boostBtn = createMainFunction("Super Boost", "Otimiza desempenho", function()
+        fpsBoostActive = not fpsBoostActive
+        if fpsBoostActive then
+            -- Simplificar gráficos
+            settings().Rendering.QualityLevel = 1
+            for _, part in pairs(Workspace:GetDescendants()) do
+                if part:IsA("BasePart") and part.Material == Enum.Material.Plastic then
+                    part.Material = Enum.Material.SmoothPlastic
+                end
+            end
+        end
+    end)
+    boostBtn.Parent = scroll
+    
+    local hitboxBtn = createMainFunction("Hitbox Expander", "Expande hitbox dos players", function()
+        hitboxExpanded = not hitboxExpanded
+        if hitboxExpanded then
+            for _, plr in pairs(Players:GetPlayers()) do
+                if plr ~= player and plr.Character then
+                    local char = plr.Character
+                    for _, part in pairs(char:GetDescendants()) do
+                        if part:IsA("BasePart") then
+                            part.Size = part.Size * 1.5
+                            part.Transparency = 0.4
+                            part.Color = Color3.new(1, 1, 1)
+                            part.CanCollide = false
+                        end
+                    end
+                end
+            end
+        else
+            for _, plr in pairs(Players:GetPlayers()) do
+                if plr ~= player and plr.Character then
+                    local char = plr.Character
+                    for _, part in pairs(char:GetDescendants()) do
+                        if part:IsA("BasePart") then
+                            part.Size = part.Size / 1.5
+                            part.Transparency = 0
+                            part.CanCollide = true
+                        end
+                    end
+                end
+            end
+        end
+    end)
+    hitboxBtn.Parent = scroll
+    
+    local panelBtn = createMainFunction("Abrir Painel🌌", "Abre painel de funções", function()
+        panelVisible = not panelVisible
+        if panelVisible then
+            createPanelGUI()
+            panelGui.Enabled = true
+        elseif panelGui then
+            panelGui.Enabled = false
+        end
+    end)
+    panelBtn.Parent = scroll
+    
+    -- Montar hierarquia
+    minimizeButton.Parent = buttonContainer
+    maximizeButton.Parent = buttonContainer
+    closeButton.Parent = buttonContainer
+    
+    buttonContainer.Parent = titleBar
+    title.Parent = titleBar
+    titleBar.Parent = mainFrame
+    
+    layout.Parent = scroll
+    scroll.Parent = functionsFrame
+    functionsFrame.Parent = mainFrame
+    
+    circleButton.Parent = mainGui
+    mainFrame.Parent = mainGui
+    mainGui.Parent = player.PlayerGui
+    
+    -- Funcionalidades
+    makeDraggable(mainFrame, titleBar)
+    makeDraggable(circleButton, circleButton)
+    
+    -- Toggle visibilidade com círculo
+    circleButton.MouseButton1Click:Connect(function()
+        mainVisible = not mainVisible
+        mainFrame.Visible = mainVisible
+    end)
+    
+    -- Botões da barra de título
+    minimizeButton.MouseButton1Click:Connect(function()
+        mainFrame.Size = UDim2.new(0, 300, 0, 30)
+        functionsFrame.Visible = false
+        minimizeButton.Visible = false
+        maximizeButton.Visible = true
+    end)
+    
+    maximizeButton.MouseButton1Click:Connect(function()
+        mainFrame.Size = UDim2.new(0, 300, 0, 400)
+        functionsFrame.Visible = true
+        minimizeButton.Visible = true
+        maximizeButton.Visible = false
+    end)
+    
+    closeButton.MouseButton1Click:Connect(function()
+        mainGui:Destroy()
+        if panelGui then
+            panelGui:Destroy()
+        end
+    end)
+    
+    return mainGui
+end
+
+-- Criação do painel de funções
+local function createPanelGUI()
+    if panelGui then
+        panelGui:Destroy()
+    end
+    
+    panelGui = Instance.new("ScreenGui")
+    panelGui.Name = "GalaxyHubPanel"
+    panelGui.ResetOnSpawn = false
+    panelGui.ZIndexBehavior = Enum.ZIndexBehavior.Sibling
+    
+    local panelFrame = Instance.new("Frame")
+    panelFrame.Name = "PanelFrame"
+    panelFrame.Size = UDim2.new(0, 350, 0, 500)
+    panelFrame.Position = UDim2.new(1, -370, 0.2, 0)
+    panelFrame.BackgroundColor3 = COLOR_BACKGROUND
+    panelFrame.BackgroundTransparency = 0.1
+    panelFrame.BorderSizePixel = 0
+    
+    local panelCorner = Instance.new("UICorner")
+    panelCorner.CornerRadius = UDim.new(0.05, 0)
+    panelCorner.Parent = panelFrame
+    
+    -- Barra de título do painel
+    local panelTitleBar = Instance.new("Frame")
+    panelTitleBar.Name = "PanelTitleBar"
+    panelTitleBar.Size = UDim2.new(1, 0, 0, 30)
+    panelTitleBar.BackgroundColor3 = COLOR_PRIMARY
+    panelTitleBar.BorderSizePixel = 0
+    
+    local panelTitleCorner = Instance.new("UICorner")
+    panelTitleCorner.CornerRadius = UDim.new(0.05, 0)
+    panelTitleCorner.Parent = panelTitleBar
+    
+    local panelTitle = Instance.new("TextLabel")
+    panelTitle.Name = "PanelTitle"
+    panelTitle.Text = "Funções do mini painel"
+    panelTitle.Size = UDim2.new(1, -20, 1, 0)
+    panelTitle.Position = UDim2.new(0, 10, 0, 0)
+    panelTitle.BackgroundTransparency = 1
+    panelTitle.TextColor3 = COLOR_TEXT
+    panelTitle.Font = Enum.Font.GothamBold
+    panelTitle.TextSize = 14
+    
+    -- Container de funções com scroll
+    local panelScroll = Instance.new("ScrollingFrame")
+    panelScroll.Name = "PanelScroll"
+    panelScroll.Size = UDim2.new(1, -20, 1, -40)
+    panelScroll.Position = UDim2.new(0, 10, 0, 40)
+    panelScroll.BackgroundTransparency = 1
+    panelScroll.ScrollBarThickness = 8
+    panelScroll.ScrollingDirection = Enum.ScrollingDirection.Y
+    
+    local panelLayout = Instance.new("UIListLayout")
+    panelLayout.Padding = UDim.new(0, 10)
+    panelLayout.SortOrder = Enum.SortOrder.LayoutOrder
+    
+    -- Função 1: Marcar Posição
+    local function createMarkPosition()
+        local frame = Instance.new("Frame")
+        frame.Size = UDim2.new(1, 0, 0, 80)
+        frame.BackgroundColor3 = COLOR_BUTTON
+        frame.BackgroundTransparency = 0.3
+        
+        local corner = Instance.new("UICorner")
+        corner.CornerRadius = UDim.new(0.1, 0)
+        corner.Parent = frame
+        
+        local title = Instance.new("TextLabel")
+        title.Text = "Mark Position📍"
+        title.Size = UDim2.new(1, -10, 0, 25)
+        title.Position = UDim2.new(0, 5, 0, 5)
+        title.BackgroundTransparency = 1
+        title.TextColor3 = COLOR_TEXT
+        title.Font = Enum.Font.GothamBold
+        title.TextSize = 14
+        
+        local markBtn = Instance.new("TextButton")
+        markBtn.Text = "Marcar"
+        markBtn.Size = UDim2.new(0, 80, 0, 25)
+        markBtn.Position = UDim2.new(0, 5, 0, 35)
+        markBtn.BackgroundColor3 = COLOR_ACCENT
+        markBtn.TextColor3 = COLOR_TEXT
+        markBtn.Font = Enum.Font.GothamSemibold
+        
+        local clearBtn = Instance.new("TextButton")
+        clearBtn.Text = "Limpar🗑️"
+        clearBtn.Size = UDim2.new(0, 80, 0, 25)
+        clearBtn.Position = UDim2.new(1, -85, 0, 35)
+        clearBtn.BackgroundColor3 = Color3.fromRGB(255, 100, 100)
+        clearBtn.TextColor3 = COLOR_TEXT
+        clearBtn.Font = Enum.Font.GothamSemibold
+        
+        markBtn.MouseButton1Click:Connect(function()
+            if markedPosition then
+                warn("Posição já marcada! Limpe primeiro.")
+                return
+            end
+            markedPosition = rootPart.Position
+            warn("Posição marcada: " .. tostring(markedPosition))
+        end)
+        
+        clearBtn.MouseButton1Click:Connect(function()
+            markedPosition = nil
+            warn("Posição limpa")
+        end)
+        
+        title.Parent = frame
+        markBtn.Parent = frame
+        clearBtn.Parent = frame
+        
+        return frame
+    end
+    
+    -- Função 2: Teleguiado
+    local function createTeleguided()
+        local toggleBtn = createToggleButton(panelScroll, "Teleguiado", function(active)
+            teleguidedActive = active
+            
+            if active then
+                -- Ativar sistema de voo
+                flying = true
+                
+                flightBodyVelocity = Instance.new("BodyVelocity")
+                flightBodyVelocity.Velocity = Vector3.new(0, 0, 0)
+                flightBodyVelocity.MaxForce = Vector3.new(4000, 4000, 4000)
+                flightBodyVelocity.Parent = rootPart
+                
+                flightGyro = Instance.new("BodyGyro")
+                flightGyro.MaxTorque = Vector3.new(50000, 50000, 50000)
+                flightGyro.P = 1000
+                flightGyro.D = 50
+                flightGyro.Parent = rootPart
+                
+                -- Sistema de plataformas
+                spawn(function()
+                    while teleguidedActive do
+                        task.wait(6)
+                        if teleguidedActive then
+                            local platform = Instance.new("Part")
+                            platform.Size = Vector3.new(10, 1, 10)
+                            platform.Position = rootPart.Position - Vector3.new(0, 5, 0)
+                            platform.Anchored = true
+                            platform.CanCollide = true
+                            platform.Transparency = 0.5
+                            platform.Color = COLOR_PRIMARY
+                            platform.Parent = Workspace
+                            
+                            table.insert(platforms, platform)
+                            task.wait(3)
+                        end
+                    end
+                end)
+                
+                -- Controle de voo
+                local connection
+                connection = RunService.Heartbeat:Connect(function()
+                    if not teleguidedActive then
+                        connection:Disconnect()
+                        return
+                    end
+                    
+                    local camera = Workspace.CurrentCamera
+                    local direction = camera.CFrame.LookVector
+                    
+                    flightBodyVelocity.Velocity = direction * flightVelocity
+                    flightGyro.CFrame = camera.CFrame
+                end)
+                
+            else
+                -- Desativar
+                flying = false
+                if flightBodyVelocity then flightBodyVelocity:Destroy() end
+                if flightGyro then flightGyro:Destroy() end
+                
+                -- Limpar plataformas
+                for _, platform in pairs(platforms) do
+                    platform:Destroy()
+                end
+                platforms = {}
+            end
+        end)
+        
+        return toggleBtn
+    end
+    
+    -- Função 3: TP Teleguiado
+    local function createTPTeleguided()
+        local toggleBtn = createToggleButton(panelScroll, "TP Teleguiado", function(active)
+            teleportTeleguidedActive = active
+            
+            if active and markedPosition then
+                spawn(function()
+                    while teleportTeleguidedActive and markedPosition do
+                        local direction = (markedPosition - rootPart.Position).Unit
+                        rootPart.CFrame = rootPart.CFrame + direction * 5
+                        
+                        -- Plataformas
+                        local platform = Instance.new("Part")
+                        platform.Size = Vector3.new(8, 1, 8)
+                        platform.Position = rootPart.Position - Vector3.new(0, 3, 0)
+                        platform.Anchored = true
+                        platform.CanCollide = true
+                        platform.Transparency = 0.6
+                        platform.Color = COLOR_ACCENT
+                        platform.Parent = Workspace
+                        
+                        table.insert(platforms, platform)
+                        game:GetService("Debris"):AddItem(platform, 7)
+                        
+                        -- Verificar se chegou perto
+                        if (rootPart.Position - markedPosition).Magnitude < 10 then
+                            teleportTeleguidedActive = false
+                            toggleBtn.Text = "TP Teleguiado [OFF]"
+                            toggleBtn.BackgroundColor3 = COLOR_OFF
+                        end
+                        
+                        task.wait(2)
+                    end
+                end)
+            end
+        end)
+        
+        return toggleBtn
+    end
+    
+    -- Função 4: Desync V1
+    local function createDesyncV1()
+        local toggleBtn = createToggleButton(panelScroll, "Desync V1", function(active)
+            desyncV1Active = active
+            
+            if active then
+                -- Sistema do arquivo Desync.txt
+                local FFlags = {
+                    GameNetPVHeaderRotationalVelocityZeroCutoffExponent = -5000,
+                    LargeReplicatorWrite5 = true,
+                    LargeReplicatorEnabled9 = true,
+                    AngularVelociryLimit = 360,
+                    TimestepArbiterVelocityCriteriaThresholdTwoDt = 2147483646,
+                    S2PhysicsSenderRate = 15000,
+                    DisableDPIScale = true,
+                    MaxDataPacketPerSend = 2147483647,
+                    PhysicsSenderMaxBandwidthBps = 20000,
+                    TimestepArbiterHumanoidLinearVelThreshold = 21,
+                    MaxMissedWorldStepsRemembered = -2147483648,
+                    PlayerHumanoidPropertyUpdateRestrict = true,
+                    SimDefaultHumanoidTimestepMultiplier = 0,
+                    StreamJobNOUVolumeLengthCap = 2147483647,
+                    DebugSendDistInSteps = -2147483648,
+                    GameNetDontSendRedundantNumTimes = 1,
+                    CheckPVLinearVelocityIntegrateVsDeltaPositionThresholdPercent = 1,
+                    CheckPVDifferencesForInterpolationMinVelThresholdStudsPerSecHundredth = 1,
+                    LargeReplicatorSerializeRead3 = true,
+                    ReplicationFocusNouExtentsSizeCutoffForPauseStuds = 2147483647,
+                    CheckPVCachedVelThresholdPercent = 10,
+                    CheckPVDifferencesForInterpolationMinRotVelThresholdRadsPerSecHundredth = 1,
+                    GameNetDontSendRedundantDeltaPositionMillionth = 1,
+                    InterpolationFrameVelocityThresholdMillionth = 5,
+                    StreamJobNOUVolumeCap = 2147483647,
+                    InterpolationFrameRotVelocityThresholdMillionth = 5,
+                    CheckPVCachedRotVelThresholdPercent = 10,
+                    WorldStepMax = 30,
+                    InterpolationFramePositionThresholdMillionth = 5,
+                    TimestepArbiterHumanoidTurningVelThreshold = 1,
+                    SimOwnedNOUCountThresholdMillionth = 2147483647,
+                    GameNetPVHeaderLinearVelocityZeroCutoffExponent = -5000,
+                    NextGenReplicatorEnabledWrite4 = true,
+                    TimestepArbiterOmegaThou = 1073741823,
+                    MaxAcceptableUpdateDelay = 1,
+                    LargeReplicatorSerializeWrite4 = true
+                }
+                
+                for name, value in pairs(FFlags) do
+                    pcall(function()
+                        setfflag(tostring(name), tostring(value))
+                    end)
+                end
+                
+                -- Criar clone
+                clone = character:Clone()
+                clone.Name = "DesyncClone"
+                clone.Parent = Workspace
+                
+                -- Posicionar clone
+                for _, part in pairs(clone:GetDescendants()) do
+                    if part:IsA("BasePart") then
+                        part.Anchored = true
+                        part.CanCollide = false
+                        part.Transparency = 0.7
+                    end
+                end
+                
+                -- Esconder personagem real
+                character:Destroy()
+                task.wait(0.1)
+                player.Character = clone
+                
+            else
+                -- Restaurar personagem
+                if clone then clone:Destroy() end
+                clone = nil
+                
+                -- Resetar personagem
+                local newChar = Instance.new("Model")
+                newChar.Parent = Workspace
+                player.Character = newChar
+                task.wait()
+                player.Character = character
+                newChar:Destroy()
+            end
+        end)
+        
+        return toggleBtn
+    end
+    
+    -- Função 5: Desync V2
+    local function createDesyncV2()
+        local toggleBtn = createToggleButton(panelScroll, "Desync V2", function(active)
+            desyncV2Active = active
+            
+            if active then
+                -- Criar clone lagado
+                clone = character:Clone()
+                clone.Name = "DesyncV2Clone"
+                clone.Parent = Workspace
+                
+                -- Tornar clone visível e personagem invisível
+                for _, part in pairs(character:GetDescendants()) do
+                    if part:IsA("BasePart") then
+                        part.Transparency = 1
+                    end
+                end
+                
+                -- Animar clone
+                spawn(function()
+                    while desyncV2Active and clone do
+                        if clone and clone.PrimaryPart then
+                            -- Movimento "lagado"
+                            clone:SetPrimaryPartCFrame(
+                                clone.PrimaryPart.CFrame * CFrame.new(
+                                    math.random(-2, 2),
+                                    0,
+                                    math.random(-2, 2)
+                                )
+                            )
+                        end
+                        task.wait(0.5)
+                    end
+                end)
+                
+            else
+                -- Restaurar
+                if clone then clone:Destroy() end
+                clone = nil
+                
+                for _, part in pairs(character:GetDescendants()) do
+                    if part:IsA("BasePart") then
+                        part.Transparency = 0
+                    end
+                end
+            end
+        end)
+        
+        return toggleBtn
+    end
+    
+    -- Função 6: Anti Lag - FPS Boost
+    local function createFPSBoost()
+        local toggleBtn = createToggleButton(panelScroll, "Anti Lag - FPS Boost", function(active)
+            fpsBoostActive = active
+            
+            if active then
+                -- Remover efeitos pesados
+                for _, obj in pairs(Workspace:GetDescendants()) do
+                    if obj:IsA("ParticleEmitter") or obj:IsA("Fire") or obj:IsA("Smoke") then
+                        obj.Enabled = false
+                    end
+                    
+                    if obj:IsA("BasePart") and obj.Material == Enum.Material.Neon then
+                        obj.Material = Enum.Material.Plastic
+                    end
+                    
+                    if obj:IsA("SurfaceLight") or obj:IsA("PointLight") then
+                        obj.Enabled = false
+                    end
+                end
+                
+                -- Baixar qualidade
+                settings().Rendering.QualityLevel = 1
+                
+            else
+                -- Restaurar
+                for _, obj in pairs(Workspace:GetDescendants()) do
+                    if obj:IsA("ParticleEmitter") or obj:IsA("Fire") or obj:IsA("Smoke") then
+                        obj.Enabled = true
+                    end
+                    
+                    if obj:IsA("SurfaceLight") or obj:IsA("PointLight") then
+                        obj.Enabled = true
+                    end
+                end
+                
+                settings().Rendering.QualityLevel = 10
+            end
+        end)
+        
+        return toggleBtn
+    end
+    
+    -- Função 7: ESP Player + Line
+    local function createESP()
+        local toggleBtn = createToggleButton(panelScroll, "ESP Player + Line", function(active)
+            espActive = active
+            
+            if active then
+                local function createESPForPlayer(plr)
+                    if plr == player or not plr.Character then return end
+                    
+                    local char = plr.Character
+                    local highlight = Instance.new("Highlight")
+                    highlight.Name = plr.Name .. "_ESP"
+                    highlight.OutlineColor = COLOR_ACCENT
+                    highlight.FillColor = Color3.new(0, 0, 0)
+                    highlight.FillTransparency = 1
+                    highlight.Parent = char
+                    
+                    local billboard = Instance.new("BillboardGui")
+                    billboard.Name = "ESPInfo"
+                    billboard.Size = UDim2.new(0, 200, 0, 50)
+                    billboard.StudsOffset = Vector3.new(0, 3, 0)
+                    billboard.AlwaysOnTop = true
+                    billboard.Parent = char
+                    
+                    local label = Instance.new("TextLabel")
+                    label.Text = plr.Name .. "\nDist: " .. math.floor((char:GetPivot().Position - rootPart.Position).Magnitude)
+                    label.Size = UDim2.new(1, 0, 1, 0)
+                    label.BackgroundTransparency = 1
+                    label.TextColor3 = COLOR_TEXT
+                    label.Font = Enum.Font.GothamBold
+                    label.TextSize = 12
+                    label.Parent = billboard
+                    
+                    table.insert(espInstances, {highlight, billboard})
+                    
+                    -- Linha
+                    local line = Instance.new("Part")
+                    line.Name = "ESPLine"
+                    line.Size = Vector3.new(0.2, 0.2, 0.2)
+                    line.Anchored = true
+                    line.CanCollide = false
+                    line.Transparency = 0.5
+                    line.Color = COLOR_PRIMARY
+                    line.Parent = Workspace
+                    
+                    table.insert(espInstances, line)
+                    
+                    spawn(function()
+                        while espActive and char and char.Parent do
+                            local distance = (char:GetPivot().Position - rootPart.Position).Magnitude
+                            label.Text = plr.Name .. "\nDist: " .. math.floor(distance)
+                            
+                            -- Atualizar linha
+                            line.Size = Vector3.new(0.2, 0.2, distance)
+                            line.CFrame = CFrame.lookAt(
+                                rootPart.Position + Vector3.new(0, 2, 0),
+                                char:GetPivot().Position
+                            ) * CFrame.new(0, 0, -distance/2)
+                            
+                            task.wait(0.1)
+                        end
+                    end)
+                end
+                
+                for _, plr in pairs(Players:GetPlayers()) do
+                    createESPForPlayer(plr)
+                end
+                
+                Players.PlayerAdded:Connect(function(plr)
+                    if espActive then
+                        plr.CharacterAdded:Connect(function()
+                            createESPForPlayer(plr)
+                        end)
+                    end
+                end)
+                
+            else
+                -- Remover ESP
+                for _, esp in pairs(espInstances) do
+                    if type(esp) == "table" then
+                        for _, obj in pairs(esp) do
+                            pcall(function() obj:Destroy() end)
+                        end
+                    else
+                        pcall(function() esp:Destroy() end)
+                    end
+                end
+                espInstances = {}
+            end
+        end)
+        
+        return toggleBtn
+    end
+    
+    -- Função 8: Infinite Jump
+    local function createInfiniteJump()
+        local toggleBtn = createToggleButton(panelScroll, "Infinite Jump", function(active)
+            infiniteJumpActive = active
+            
+            if active then
+                local connection
+                connection = UserInputService.JumpRequest:Connect(function()
+                    if infiniteJumpActive then
+                        humanoid:ChangeState(Enum.HumanoidStateType.Jumping)
+                    end
+                end)
+                
+                -- Cair mais devagar
+                Workspace.Gravity = 50
+                
+            else
+                Workspace.Gravity = 196.2
+            end
+        end)
+        
+        return toggleBtn
+    end
+    
+    -- Função 9: Speed Boost
+    local function createSpeedBoost()
+        local toggleBtn = createToggleButton(panelScroll, "Speed Boost", function(active)
+            speedBoostActive = active
+            
+            if active then
+                humanoid.WalkSpeed = 35
+                
+                -- Efeito visual
+                local boostEffect = Instance.new("ParticleEmitter")
+                boostEffect.Parent = rootPart
+                boostEffect.Color = ColorSequence.new(COLOR_ACCENT)
+                boostEffect.Size = NumberSequence.new(0.5)
+                boostEffect.Lifetime = NumberRange.new(0.5)
+                boostEffect.Rate = 50
+                
+            else
+                humanoid.WalkSpeed = 16
+                
+                -- Remover efeito
+                for _, child in pairs(rootPart:GetChildren()) do
+                    if child:IsA("ParticleEmitter") then
+                        child:Destroy()
+                    end
+                end
+            end
+        end)
+        
+        return toggleBtn
+    end
+    
+    -- Adicionar todas as funções ao painel
+    local markPosFrame = createMarkPosition()
+    markPosFrame.Parent = panelScroll
+    
+    local teleguidedBtn = createTeleguided()
+    teleguidedBtn.Parent = panelScroll
+    
+    local tpTeleguidedBtn = createTPTeleguided()
+    tpTeleguidedBtn.Parent = panelScroll
+    
+    local desyncV1Btn = createDesyncV1()
+    desyncV1Btn.Parent = panelScroll
+    
+    local desyncV2Btn = createDesyncV2()
+    desyncV2Btn.Parent = panelScroll
+    
+    local fpsBoostBtn = createFPSBoost()
+    fpsBoostBtn.Parent = panelScroll
+    
+    local espBtn = createESP()
+    espBtn.Parent = panelScroll
+    
+    local infiniteJumpBtn = createInfiniteJump()
+    infiniteJumpBtn.Parent = panelScroll
+    
+    local speedBoostBtn = createSpeedBoost()
+    speedBoostBtn.Parent = panelScroll
+    
+    -- Montar painel
+    panelTitle.Parent = panelTitleBar
+    panelTitleBar.Parent = panelFrame
+    
+    panelLayout.Parent = panelScroll
+    panelScroll.Parent = panelFrame
+    
+    panelFrame.Parent = panelGui
+    panelGui.Parent = player.PlayerGui
+    
+    -- Tornar arrastável
+    makeDraggable(panelFrame, panelTitleBar)
+    
+    return panelGui
+end
+
+-- Inicialização
+setupProtections()
+createMainGUI()
+
+print("Galaxy Hub carregado com sucesso!")
+print("Siga @galaxyscripts8 no TikTok!")
