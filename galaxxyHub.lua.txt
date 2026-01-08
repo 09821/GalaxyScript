@@ -1,0 +1,1225 @@
+-- Galaxy Hub - Sistema Separado
+-- Criado por: GalaxyScripts8
+-- Versão: 2.0
+
+-- Serviços
+local Players = game:GetService("Players")
+local RunService = game:GetService("RunService")
+local UserInputService = game:GetService("UserInputService")
+local TweenService = game:GetService("TweenService")
+local Workspace = game:GetService("Workspace")
+local ReplicatedStorage = game:GetService("ReplicatedStorage")
+
+-- Player
+local player = Players.LocalPlayer
+local character = player.Character or player.CharacterAdded:Wait()
+local humanoid = character:WaitForChild("Humanoid")
+local rootPart = character:WaitForChild("HumanoidRootPart")
+
+-- Configurações de cores
+local PRIMARY_COLOR = Color3.fromRGB(180, 120, 255)  -- Roxo suave
+local SECONDARY_COLOR = Color3.fromRGB(70, 30, 120)   -- Roxo escuro
+local ACCENT_COLOR = Color3.fromRGB(220, 180, 255)    -- Roxo claro
+local TEXT_COLOR = Color3.fromRGB(240, 240, 240)
+local BUTTON_HOVER = Color3.fromRGB(200, 160, 255)
+
+-- Estados globais
+local isMainGuiVisible = false
+local isPanelMinimized = false
+local isPanelVisible = false
+local isGuiDragging = false
+
+-- Tabelas para armazenar estados
+local activeFunctions = {
+    xray = false,
+    superBoost = false,
+    hitboxExpander = false,
+    hitboxSize = 5,
+    teleguided = false,
+    tpTeleguided = false,
+    desyncV1 = false,
+    desyncV2 = false,
+    antiLag = false,
+    esp = false,
+    infiniteJump = false,
+    speedBoost = false
+}
+
+-- Tabelas para armazenar objetos
+local espBoxes = {}
+local hitboxParts = {}
+local platforms = {}
+local savedPosition = nil
+local desyncClone = nil
+local originalSettings = {}
+
+-- Sistema de proteções
+local function setupProtections()
+    -- Anti-Ragdoll
+    coroutine.wrap(function()
+        while true do
+            task.wait(0.1)
+            if character and humanoid then
+                humanoid:SetStateEnabled(Enum.HumanoidStateType.FallingDown, false)
+                humanoid:SetStateEnabled(Enum.HumanoidStateType.Ragdoll, false)
+                humanoid:SetStateEnabled(Enum.HumanoidStateType.Physics, false)
+            end
+        end
+    end)()
+
+    -- Anti-Reset
+    character.ChildAdded:Connect(function(child)
+        if child.Name == "Humanoid" then
+            local newHum = child
+            task.wait(0.1)
+            if newHum then
+                newHum.Health = 100
+            end
+        end
+    end)
+
+    -- Anti-Kick (proteção básica)
+    local mt = getrawmetatable(game)
+    local oldNamecall = mt.__namecall
+    
+    setreadonly(mt, false)
+    
+    mt.__namecall = newcclosure(function(self, ...)
+        local method = getnamecallmethod()
+        local args = {...}
+        
+        -- Impedir kick por scripts
+        if method == "Kick" or method == "kick" then
+            warn("Tentativa de kick bloqueada pelo Galaxy Hub")
+            return nil
+        end
+        
+        return oldNamecall(self, ...)
+    end)
+    
+    setreadonly(mt, true)
+
+    humanoid.Died:Connect(function()
+        if activeFunctions.desyncV1 or activeFunctions.desyncV2 then
+            character:BreakJoints()
+            task.wait(Players.RespawnTime)
+            player:LoadCharacter()
+        end
+    end)
+end
+
+-- Função para criar elementos arrastáveis
+local function makeDraggable(gui)
+    local dragging = false
+    local dragInput, dragStart, startPos
+
+    local function update(input)
+        local delta = input.Position - dragStart
+        gui.Position = UDim2.new(startPos.X.Scale, startPos.X.Offset + delta.X, startPos.Y.Scale, startPos.Y.Offset + delta.Y)
+    end
+
+    gui.InputBegan:Connect(function(input)
+        if input.UserInputType == Enum.UserInputType.MouseButton1 or input.UserInputType == Enum.UserInputType.Touch then
+            dragging = true
+            dragStart = input.Position
+            startPos = gui.Position
+            
+            input.Changed:Connect(function()
+                if input.UserInputState == Enum.UserInputState.End then
+                    dragging = false
+                end
+            end)
+        end
+    end)
+
+    gui.InputChanged:Connect(function(input)
+        if input.UserInputType == Enum.UserInputType.MouseMovement and dragging then
+            dragInput = input
+        end
+    end)
+
+    UserInputService.InputChanged:Connect(function(input)
+        if input == dragInput and dragging then
+            update(input)
+        end
+    end)
+end
+
+-- Círculo para abrir/fechar GUI Principal
+local screenGui = Instance.new("ScreenGui")
+screenGui.Name = "GalaxyHubMain"
+screenGui.ZIndexBehavior = Enum.ZIndexBehavior.Sibling
+screenGui.Parent = player:WaitForChild("PlayerGui")
+
+local circleButton = Instance.new("ImageButton")
+circleButton.Name = "CircleButton"
+circleButton.Size = UDim2.new(0, 60, 0, 60)
+circleButton.Position = UDim2.new(0, 20, 0.5, -30)
+circleButton.BackgroundColor3 = PRIMARY_COLOR
+circleButton.BackgroundTransparency = 0.3
+circleButton.Image = "rbxassetid://3570695787"
+circleButton.ScaleType = Enum.ScaleType.Slice
+circleButton.SliceCenter = Rect.new(100, 100, 100, 100)
+circleButton.Parent = screenGui
+
+-- Efeitos do círculo
+circleButton.MouseEnter:Connect(function()
+    TweenService:Create(circleButton, TweenInfo.new(0.2), {
+        BackgroundTransparency = 0.1,
+        Rotation = 360
+    }):Play()
+end)
+
+circleButton.MouseLeave:Connect(function()
+    TweenService:Create(circleButton, TweenInfo.new(0.2), {
+        BackgroundTransparency = 0.3,
+        Rotation = 0
+    }):Play()
+end)
+
+makeDraggable(circleButton)
+
+-- GUI PRINCIPAL (com 4 funções)
+local mainFrame = Instance.new("Frame")
+mainFrame.Name = "MainFrame"
+mainFrame.Size = UDim2.new(0, 300, 0, 220)
+mainFrame.Position = UDim2.new(0, 100, 0.5, -110)
+mainFrame.BackgroundColor3 = SECONDARY_COLOR
+mainFrame.BackgroundTransparency = 0.1
+mainFrame.BorderSizePixel = 0
+mainFrame.Visible = false
+mainFrame.Parent = screenGui
+
+makeDraggable(mainFrame)
+
+-- Barra de título da GUI Principal
+local titleBar = Instance.new("Frame")
+titleBar.Name = "TitleBar"
+titleBar.Size = UDim2.new(1, 0, 0, 30)
+titleBar.BackgroundColor3 = PRIMARY_COLOR
+titleBar.BackgroundTransparency = 0.2
+titleBar.Parent = mainFrame
+
+local titleLabel = Instance.new("TextLabel")
+titleLabel.Name = "TitleLabel"
+titleLabel.Size = UDim2.new(0, 150, 1, 0)
+titleLabel.Position = UDim2.new(0, 10, 0, 0)
+titleLabel.BackgroundTransparency = 1
+titleLabel.Text = "Galaxy Hub 🟣"
+titleLabel.TextColor3 = TEXT_COLOR
+titleLabel.TextSize = 16
+titleLabel.Font = Enum.Font.GothamBold
+titleLabel.TextXAlignment = Enum.TextXAlignment.Left
+titleLabel.Parent = titleBar
+
+-- Botões da barra de título (GUI Principal)
+local minimizeButton = Instance.new("TextButton")
+minimizeButton.Name = "MinimizeButton"
+minimizeButton.Size = UDim2.new(0, 30, 0, 30)
+minimizeButton.Position = UDim2.new(1, -70, 0, 0)
+minimizeButton.BackgroundColor3 = Color3.fromRGB(255, 193, 7)
+minimizeButton.BackgroundTransparency = 0.3
+minimizeButton.Text = "-"
+minimizeButton.TextColor3 = TEXT_COLOR
+minimizeButton.TextSize = 18
+minimizeButton.Font = Enum.Font.GothamBold
+minimizeButton.Parent = titleBar
+
+local maximizeButton = Instance.new("TextButton")
+maximizeButton.Name = "MaximizeButton"
+maximizeButton.Size = UDim2.new(0, 30, 0, 30)
+maximizeButton.Position = UDim2.new(1, -35, 0, 0)
+maximizeButton.BackgroundColor3 = Color3.fromRGB(76, 175, 80)
+maximizeButton.BackgroundTransparency = 0.3
+maximizeButton.Text = "+"
+maximizeButton.TextColor3 = TEXT_COLOR
+maximizeButton.TextSize = 18
+maximizeButton.Font = Enum.Font.GothamBold
+maximizeButton.Visible = false
+maximizeButton.Parent = titleBar
+
+local closeButton = Instance.new("TextButton")
+closeButton.Name = "CloseButton"
+closeButton.Size = UDim2.new(0, 30, 0, 30)
+closeButton.Position = UDim2.new(1, -35, 0, 0)
+closeButton.BackgroundColor3 = Color3.fromRGB(244, 67, 54)
+closeButton.BackgroundTransparency = 0.3
+closeButton.Text = "X"
+closeButton.TextColor3 = TEXT_COLOR
+closeButton.TextSize = 18
+closeButton.Font = Enum.Font.GothamBold
+closeButton.Parent = titleBar
+
+-- Conteúdo da GUI Principal (4 funções)
+local mainContent = Instance.new("Frame")
+mainContent.Name = "MainContent"
+mainContent.Size = UDim2.new(1, -10, 1, -40)
+mainContent.Position = UDim2.new(0, 5, 0, 35)
+mainContent.BackgroundTransparency = 1
+mainContent.Parent = mainFrame
+
+-- Função para criar botões na GUI Principal
+local function createMainButton(name, description)
+    local buttonFrame = Instance.new("Frame")
+    buttonFrame.Name = name .. "Frame"
+    buttonFrame.Size = UDim2.new(1, 0, 0, 45)
+    buttonFrame.BackgroundColor3 = PRIMARY_COLOR
+    buttonFrame.BackgroundTransparency = 0.7
+    buttonFrame.BorderSizePixel = 0
+    
+    local button = Instance.new("TextButton")
+    button.Name = name .. "Button"
+    button.Size = UDim2.new(1, 0, 1, 0)
+    button.BackgroundTransparency = 1
+    button.Text = ""
+    button.Parent = buttonFrame
+    
+    local title = Instance.new("TextLabel")
+    title.Name = "Title"
+    title.Size = UDim2.new(0.7, 0, 0.6, 0)
+    title.Position = UDim2.new(0, 10, 0, 5)
+    title.BackgroundTransparency = 1
+    title.Text = name
+    title.TextColor3 = TEXT_COLOR
+    title.TextSize = 14
+    title.Font = Enum.Font.GothamSemibold
+    title.TextXAlignment = Enum.TextXAlignment.Left
+    title.Parent = buttonFrame
+    
+    local desc = Instance.new("TextLabel")
+    desc.Name = "Description"
+    desc.Size = UDim2.new(0.7, 0, 0.4, 0)
+    desc.Position = UDim2.new(0, 10, 0.6, 0)
+    desc.BackgroundTransparency = 1
+    desc.Text = description
+    desc.TextColor3 = TEXT_COLOR
+    desc.TextTransparency = 0.3
+    desc.TextSize = 12
+    desc.Font = Enum.Font.Gotham
+    desc.TextXAlignment = Enum.TextXAlignment.Left
+    desc.Parent = buttonFrame
+    
+    local toggleButton = Instance.new("TextButton")
+    toggleButton.Name = "Toggle"
+    toggleButton.Size = UDim2.new(0, 60, 0, 25)
+    toggleButton.Position = UDim2.new(1, -70, 0.5, -12.5)
+    toggleButton.BackgroundColor3 = Color3.fromRGB(100, 100, 100)
+    toggleButton.Text = "OFF"
+    toggleButton.TextColor3 = TEXT_COLOR
+    toggleButton.TextSize = 12
+    toggleButton.Font = Enum.Font.GothamBold
+    toggleButton.Parent = buttonFrame
+    
+    return buttonFrame, toggleButton
+end
+
+-- Criar os 4 botões da GUI Principal
+local mainButtons = {
+    xray = createMainButton("X-Ray", "Ver através das paredes"),
+    superBoost = createMainButton("Super Boost", "Melhorar performance"),
+    hitboxExpander = createMainButton("Hitbox Expander", "Expandir hitbox"),
+    openPanel = {}
+}
+
+-- Posicionar botões
+mainButtons.xray[1].Position = UDim2.new(0, 0, 0, 10)
+mainButtons.superBoost[1].Position = UDim2.new(0, 0, 0, 65)
+mainButtons.hitboxExpander[1].Position = UDim2.new(0, 0, 0, 120)
+
+mainButtons.xray[1].Parent = mainContent
+mainButtons.superBoost[1].Parent = mainContent
+mainButtons.hitboxExpander[1].Parent = mainContent
+
+-- Botão especial para abrir painel
+local openPanelFrame = Instance.new("Frame")
+openPanelFrame.Name = "OpenPanelFrame"
+openPanelFrame.Size = UDim2.new(1, 0, 0, 45)
+openPanelFrame.Position = UDim2.new(0, 0, 0, 175)
+openPanelFrame.BackgroundColor3 = ACCENT_COLOR
+openPanelFrame.BackgroundTransparency = 0.5
+openPanelFrame.BorderSizePixel = 0
+openPanelFrame.Parent = mainContent
+
+local openPanelButton = Instance.new("TextButton")
+openPanelButton.Name = "OpenPanelButton"
+openPanelButton.Size = UDim2.new(1, 0, 1, 0)
+openPanelButton.BackgroundTransparency = 1
+openPanelButton.Text = "Abrir Painel 🌌"
+openPanelButton.TextColor3 = TEXT_COLOR
+openPanelButton.TextSize = 16
+openPanelButton.Font = Enum.Font.GothamBold
+openPanelButton.Parent = openPanelFrame
+
+mainButtons.openPanel.frame = openPanelFrame
+mainButtons.openPanel.button = openPanelButton
+
+-- Campo para tamanho da hitbox (visível apenas quando hitbox ativado)
+local hitboxSizeFrame = Instance.new("Frame")
+hitboxSizeFrame.Name = "HitboxSizeFrame"
+hitboxSizeFrame.Size = UDim2.new(1, -20, 0, 30)
+hitboxSizeFrame.Position = UDim2.new(0, 10, 0, 150)
+hitboxSizeFrame.BackgroundTransparency = 1
+hitboxSizeFrame.Visible = false
+hitboxSizeFrame.Parent = mainContent
+
+local hitboxLabel = Instance.new("TextLabel")
+hitboxLabel.Size = UDim2.new(0.5, 0, 1, 0)
+hitboxLabel.BackgroundTransparency = 1
+hitboxLabel.Text = "Tamanho:"
+hitboxLabel.TextColor3 = TEXT_COLOR
+hitboxLabel.TextSize = 14
+hitboxLabel.TextXAlignment = Enum.TextXAlignment.Left
+hitboxLabel.Parent = hitboxSizeFrame
+
+local hitboxInput = Instance.new("TextBox")
+hitboxInput.Size = UDim2.new(0.5, 0, 1, 0)
+hitboxInput.Position = UDim2.new(0.5, 0, 0, 0)
+hitboxInput.BackgroundColor3 = PRIMARY_COLOR
+hitboxInput.BackgroundTransparency = 0.7
+hitboxInput.TextColor3 = TEXT_COLOR
+hitboxInput.Text = "5"
+hitboxInput.TextSize = 14
+hitboxInput.Parent = hitboxSizeFrame
+
+-- PAINEL SECUNDÁRIO (com todas as outras funções)
+local panelGui = Instance.new("ScreenGui")
+panelGui.Name = "GalaxyHubPanel"
+panelGui.ZIndexBehavior = Enum.ZIndexBehavior.Sibling
+panelGui.Enabled = false
+panelGui.Parent = player:WaitForChild("PlayerGui")
+
+local panelFrame = Instance.new("Frame")
+panelFrame.Name = "PanelFrame"
+panelFrame.Size = UDim2.new(0, 320, 0, 450)
+panelFrame.Position = UDim2.new(1, -330, 0.5, -225)
+panelFrame.BackgroundColor3 = SECONDARY_COLOR
+panelFrame.BackgroundTransparency = 0.1
+panelFrame.BorderSizePixel = 0
+panelFrame.Visible = false
+panelFrame.Parent = panelGui
+
+makeDraggable(panelFrame)
+
+-- Título do painel (sem barra, embutido)
+local panelTitle = Instance.new("TextLabel")
+panelTitle.Size = UDim2.new(1, 0, 0, 40)
+panelTitle.BackgroundColor3 = PRIMARY_COLOR
+panelTitle.BackgroundTransparency = 0.3
+panelTitle.Text = "Segue lá no TKK @galaxyscripts8"
+panelTitle.TextColor3 = TEXT_COLOR
+panelTitle.TextSize = 14
+panelTitle.Font = Enum.Font.GothamBold
+panelTitle.Parent = panelFrame
+
+-- Conteúdo rolável do painel
+local panelScroll = Instance.new("ScrollingFrame")
+panelScroll.Name = "PanelScroll"
+panelScroll.Size = UDim2.new(1, -10, 1, -50)
+panelScroll.Position = UDim2.new(0, 5, 0, 45)
+panelScroll.BackgroundTransparency = 1
+panelScroll.BorderSizePixel = 0
+panelScroll.ScrollBarThickness = 8
+panelScroll.ScrollBarImageColor3 = ACCENT_COLOR
+panelScroll.Parent = panelFrame
+
+local panelListLayout = Instance.new("UIListLayout")
+panelListLayout.Padding = UDim.new(0, 10)
+panelListLayout.Parent = panelScroll
+
+-- Função para criar botões no painel
+local function createPanelButton(name, description)
+    local buttonFrame = Instance.new("Frame")
+    buttonFrame.Name = name .. "PanelFrame"
+    buttonFrame.Size = UDim2.new(1, 0, 0, 50)
+    buttonFrame.BackgroundColor3 = PRIMARY_COLOR
+    buttonFrame.BackgroundTransparency = 0.7
+    buttonFrame.BorderSizePixel = 0
+    
+    local button = Instance.new("TextButton")
+    button.Name = name .. "PanelButton"
+    button.Size = UDim2.new(1, 0, 1, 0)
+    button.BackgroundTransparency = 1
+    button.Text = ""
+    button.Parent = buttonFrame
+    
+    local title = Instance.new("TextLabel")
+    title.Name = "Title"
+    title.Size = UDim2.new(0.7, 0, 0.6, 0)
+    title.Position = UDim2.new(0, 10, 0, 5)
+    title.BackgroundTransparency = 1
+    title.Text = name
+    title.TextColor3 = TEXT_COLOR
+    title.TextSize = 14
+    title.Font = Enum.Font.GothamSemibold
+    title.TextXAlignment = Enum.TextXAlignment.Left
+    title.Parent = buttonFrame
+    
+    local desc = Instance.new("TextLabel")
+    desc.Name = "Description"
+    desc.Size = UDim2.new(0.7, 0, 0.4, 0)
+    desc.Position = UDim2.new(0, 10, 0.6, 0)
+    desc.BackgroundTransparency = 1
+    desc.Text = description
+    desc.TextColor3 = TEXT_COLOR
+    desc.TextTransparency = 0.3
+    desc.TextSize = 12
+    desc.Font = Enum.Font.Gotham
+    desc.TextXAlignment = Enum.TextXAlignment.Left
+    desc.Parent = buttonFrame
+    
+    local toggleButton = Instance.new("TextButton")
+    toggleButton.Name = "Toggle"
+    toggleButton.Size = UDim2.new(0, 60, 0, 25)
+    toggleButton.Position = UDim2.new(1, -70, 0.5, -12.5)
+    toggleButton.BackgroundColor3 = Color3.fromRGB(100, 100, 100)
+    toggleButton.Text = "OFF"
+    toggleButton.TextColor3 = TEXT_COLOR
+    toggleButton.TextSize = 12
+    toggleButton.Font = Enum.Font.GothamBold
+    toggleButton.Parent = buttonFrame
+    
+    return buttonFrame, toggleButton
+end
+
+-- Criar botões do painel
+local panelButtons = {
+    markPosition = {},
+    clearPosition = {},
+    teleguided = createPanelButton("Teleguiado", "Voo controlado pela câmera"),
+    tpTeleguided = createPanelButton("TP Teleguiado", "Voo para posição marcada"),
+    desyncV1 = createPanelButton("Desync V1", "Clone estático, você se move"),
+    desyncV2 = createPanelButton("Desync V2", "Clone lagado, você invisível"),
+    antiLag = createPanelButton("Anti-Lag FPS Boost", "Remover efeitos pesados"),
+    esp = createPanelButton("ESP Player + Line", "Ver jogadores através paredes"),
+    infiniteJump = createPanelButton("Infinit Jump", "Pulos infinitos e queda lenta"),
+    speedBoost = createPanelButton("Speed Boost", "Aumentar velocidade para 35")
+}
+
+-- Botões especiais de marcação de posição
+local markPositionFrame = Instance.new("Frame")
+markPositionFrame.Name = "MarkPositionFrame"
+markPositionFrame.Size = UDim2.new(1, 0, 0, 40)
+markPositionFrame.BackgroundColor3 = ACCENT_COLOR
+markPositionFrame.BackgroundTransparency = 0.5
+markPositionFrame.BorderSizePixel = 0
+markPositionFrame.Parent = panelScroll
+
+local markPositionButton = Instance.new("TextButton")
+markPositionButton.Name = "MarkPositionButton"
+markPositionButton.Size = UDim2.new(1, 0, 1, 0)
+markPositionButton.BackgroundTransparency = 1
+markPositionButton.Text = "Mark Position 📍"
+markPositionButton.TextColor3 = TEXT_COLOR
+markPositionButton.TextSize = 14
+markPositionButton.Font = Enum.Font.GothamSemibold
+markPositionButton.Parent = markPositionFrame
+
+panelButtons.markPosition.frame = markPositionFrame
+panelButtons.markPosition.button = markPositionButton
+
+local clearPositionFrame = Instance.new("Frame")
+clearPositionFrame.Name = "ClearPositionFrame"
+clearPositionFrame.Size = UDim2.new(1, 0, 0, 40)
+clearPositionFrame.BackgroundColor3 = Color3.fromRGB(244, 67, 54)
+clearPositionFrame.BackgroundTransparency = 0.5
+clearPositionFrame.BorderSizePixel = 0
+clearPositionFrame.Parent = panelScroll
+
+local clearPositionButton = Instance.new("TextButton")
+clearPositionButton.Name = "ClearPositionButton"
+clearPositionButton.Size = UDim2.new(1, 0, 1, 0)
+clearPositionButton.BackgroundTransparency = 1
+clearPositionButton.Text = "Clear Position 🗑️"
+clearPositionButton.TextColor3 = TEXT_COLOR
+clearPositionButton.TextSize = 14
+clearPositionButton.Font = Enum.Font.GothamSemibold
+clearPositionButton.Parent = clearPositionFrame
+
+panelButtons.clearPosition.frame = clearPositionFrame
+panelButtons.clearPosition.button = clearPositionButton
+
+-- Adicionar botões com toggle ao painel
+local toggleButtonsOrder = {
+    panelButtons.teleguided[1],
+    panelButtons.tpTeleguided[1],
+    panelButtons.desyncV1[1],
+    panelButtons.desyncV2[1],
+    panelButtons.antiLag[1],
+    panelButtons.esp[1],
+    panelButtons.infiniteJump[1],
+    panelButtons.speedBoost[1]
+}
+
+for i, button in ipairs(toggleButtonsOrder) do
+    button.Parent = panelScroll
+end
+
+-- IMPLEMENTAÇÃO DAS FUNÇÕES
+-- 1. X-Ray
+local function toggleXRay()
+    activeFunctions.xray = not activeFunctions.xray
+    if activeFunctions.xray then
+        for _, part in pairs(Workspace:GetDescendants()) do
+            if part:IsA("BasePart") and part.Transparency < 0.5 then
+                part.LocalTransparencyModifier = 0.5
+            end
+        end
+    else
+        for _, part in pairs(Workspace:GetDescendants()) do
+            if part:IsA("BasePart") then
+                part.LocalTransparencyModifier = 0
+            end
+        end
+    end
+end
+
+-- 2. Super Boost
+local function toggleSuperBoost()
+    activeFunctions.superBoost = not activeFunctions.superBoost
+    if activeFunctions.superBoost then
+        settings().Rendering.QualityLevel = 1
+        RunService:Set3dRenderingEnabled(false)
+        task.wait(0.1)
+        RunService:Set3dRenderingEnabled(true)
+    else
+        settings().Rendering.QualityLevel = 10
+    end
+end
+
+-- 3. Hitbox Expander
+local function updateHitboxes()
+    for _, part in pairs(hitboxParts) do
+        part:Destroy()
+    end
+    hitboxParts = {}
+    
+    if activeFunctions.hitboxExpander then
+        for _, player in pairs(Players:GetPlayers()) do
+            if player ~= game.Players.LocalPlayer and player.Character then
+                local char = player.Character
+                local humanoid = char:FindFirstChild("Humanoid")
+                local root = char:FindFirstChild("HumanoidRootPart")
+                
+                if humanoid and root then
+                    local hitbox = Instance.new("Part")
+                    hitbox.Name = "Hitbox_" .. player.Name
+                    hitbox.Size = Vector3.new(activeFunctions.hitboxSize, activeFunctions.hitboxSize, activeFunctions.hitboxSize)
+                    hitbox.CFrame = root.CFrame
+                    hitbox.Anchored = true
+                    hitbox.CanCollide = false
+                    hitbox.Transparency = 0.6
+                    hitbox.Color = Color3.new(1, 1, 1)
+                    hitbox.Material = Enum.Material.Plastic
+                    hitbox.Parent = Workspace
+                    
+                    table.insert(hitboxParts, hitbox)
+                    
+                    coroutine.wrap(function()
+                        while activeFunctions.hitboxExpander and hitbox and hitbox.Parent do
+                            if root and root.Parent then
+                                hitbox.CFrame = root.CFrame
+                            end
+                            task.wait()
+                        end
+                        hitbox:Destroy()
+                    end)()
+                end
+            end
+        end
+    end
+end
+
+local function toggleHitboxExpander()
+    activeFunctions.hitboxExpander = not activeFunctions.hitboxExpander
+    hitboxSizeFrame.Visible = activeFunctions.hitboxExpander
+    updateHitboxes()
+end
+
+-- 4. Teleguiado
+local function toggleTeleguided()
+    activeFunctions.teleguided = not activeFunctions.teleguided
+    
+    if activeFunctions.teleguided then
+        humanoid.PlatformStand = true
+        local bodyVelocity = Instance.new("BodyVelocity")
+        bodyVelocity.MaxForce = Vector3.new(40000, 40000, 40000)
+        bodyVelocity.Velocity = Vector3.new(0, 0, 0)
+        bodyVelocity.Parent = rootPart
+        
+        -- Controle de plataformas
+        local platformCooldown = 6
+        local lastPlatformTime = tick()
+        
+        coroutine.wrap(function()
+            while activeFunctions.teleguided do
+                local camera = Workspace.CurrentCamera
+                local direction = camera.CFrame.LookVector
+                bodyVelocity.Velocity = direction * 28
+                
+                -- Criar plataforma após cooldown
+                if tick() - lastPlatformTime >= platformCooldown then
+                    platformCooldown = 3  -- Próximas plataformas a cada 3 segundos
+                    lastPlatformTime = tick()
+                    
+                    local platform = Instance.new("Part")
+                    platform.Size = Vector3.new(6, 1, 6)
+                    platform.CFrame = rootPart.CFrame - Vector3.new(0, 4, 0)
+                    platform.Anchored = true
+                    platform.CanCollide = true
+                    platform.Transparency = 0.7
+                    platform.Color = PRIMARY_COLOR
+                    platform.Material = Enum.Material.Plastic
+                    platform.Parent = Workspace
+                    
+                    table.insert(platforms, platform)
+                    
+                    task.wait(6)
+                    if platform and platform.Parent then
+                        platform:Destroy()
+                    end
+                end
+                
+                task.wait()
+            end
+            bodyVelocity:Destroy()
+            humanoid.PlatformStand = false
+        end)()
+    else
+        humanoid.PlatformStand = false
+        for _, platform in pairs(platforms) do
+            platform:Destroy()
+        end
+        platforms = {}
+    end
+end
+
+-- 5. TP Teleguiado
+local function toggleTPTeleguided()
+    activeFunctions.tpTeleguided = not activeFunctions.tpTeleguided
+    
+    if activeFunctions.tpTeleguided and savedPosition then
+        humanoid.PlatformStand = true
+        local bodyVelocity = Instance.new("BodyVelocity")
+        bodyVelocity.MaxForce = Vector3.new(40000, 40000, 40000)
+        bodyVelocity.Parent = rootPart
+        
+        -- Controle de plataformas
+        local platformCooldown = 7
+        local lastPlatformTime = tick()
+        
+        coroutine.wrap(function()
+            while activeFunctions.tpTeleguided and savedPosition do
+                local direction = (savedPosition - rootPart.Position).Unit
+                bodyVelocity.Velocity = direction * 30
+                
+                -- Criar plataforma após cooldown
+                if tick() - lastPlatformTime >= platformCooldown then
+                    platformCooldown = 2  -- Próximas plataformas a cada 2 segundos
+                    lastPlatformTime = tick()
+                    
+                    local platform = Instance.new("Part")
+                    platform.Size = Vector3.new(5, 1, 5)
+                    platform.CFrame = rootPart.CFrame - Vector3.new(0, 3, 0)
+                    platform.Anchored = true
+                    platform.CanCollide = true
+                    platform.Transparency = 0.6
+                    platform.Color = ACCENT_COLOR
+                    platform.Material = Enum.Material.Plastic
+                    platform.Parent = Workspace
+                    
+                    table.insert(platforms, platform)
+                    
+                    task.wait(7)
+                    if platform and platform.Parent then
+                        platform:Destroy()
+                    end
+                end
+                
+                -- Auto-desativar quando chegar perto
+                if (rootPart.Position - savedPosition).Magnitude < 5 then
+                    activeFunctions.tpTeleguided = false
+                    break
+                end
+                
+                task.wait()
+            end
+            bodyVelocity:Destroy()
+            humanoid.PlatformStand = false
+            activeFunctions.tpTeleguided = false
+        end)()
+    end
+end
+
+-- 6. Desync V1
+local function createDesyncCloneV1()
+    if character then
+        desyncClone = character:Clone()
+        for _, part in pairs(desyncClone:GetDescendants()) do
+            if part:IsA("BasePart") then
+                part.CanCollide = false
+                part.Transparency = 0.5
+                part.Anchored = true
+            end
+        end
+        desyncClone.Parent = Workspace
+        desyncClone.HumanoidRootPart.CFrame = character.HumanoidRootPart.CFrame
+        
+        -- Tornar personagem original invisível para outros
+        for _, part in pairs(character:GetDescendants()) do
+            if part:IsA("BasePart") then
+                part.LocalTransparencyModifier = 1
+            end
+        end
+    end
+end
+
+local function toggleDesyncV1()
+    activeFunctions.desyncV1 = not activeFunctions.desyncV1
+    
+    if activeFunctions.desyncV1 then
+        createDesyncCloneV1()
+        character.HumanoidRootPart.Anchored = false
+    else
+        if desyncClone then
+            desyncClone:Destroy()
+            desyncClone = nil
+        end
+        -- Restaurar visibilidade
+        for _, part in pairs(character:GetDescendants()) do
+            if part:IsA("BasePart") then
+                part.LocalTransparencyModifier = 0
+            end
+        end
+    end
+end
+
+-- 7. Desync V2
+local function createDesyncCloneV2()
+    if character then
+        desyncClone = character:Clone()
+        for _, part in pairs(desyncClone:GetDescendants()) do
+            if part:IsA("BasePart") then
+                part.CanCollide = false
+                part.Transparency = 0.3
+                part.Anchored = false
+            end
+        end
+        desyncClone.Parent = Workspace
+        desyncClone.HumanoidRootPart.CFrame = character.HumanoidRootPart.CFrame
+        
+        -- Movimento "lagado" do clone
+        coroutine.wrap(function()
+            while desyncClone and activeFunctions.desyncV2 do
+                desyncClone.HumanoidRootPart.CFrame = desyncClone.HumanoidRootPart.CFrame * 
+                    CFrame.new(math.random(-0.5, 0.5), math.sin(tick())*0.2, math.random(-0.5, 0.5))
+                task.wait(0.5)
+            end
+        end)()
+        
+        -- Tornar personagem original invisível
+        for _, part in pairs(character:GetDescendants()) do
+            if part:IsA("BasePart") then
+                part.LocalTransparencyModifier = 1
+            end
+        end
+    end
+end
+
+local function toggleDesyncV2()
+    activeFunctions.desyncV2 = not activeFunctions.desyncV2
+    
+    if activeFunctions.desyncV2 then
+        createDesyncCloneV2()
+        character.HumanoidRootPart.Anchored = false
+    else
+        if desyncClone then
+            desyncClone:Destroy()
+            desyncClone = nil
+        end
+        -- Restaurar visibilidade
+        for _, part in pairs(character:GetDescendants()) do
+            if part:IsA("BasePart") then
+                part.LocalTransparencyModifier = 0
+            end
+        end
+    end
+end
+
+-- 8. Anti-Lag FPS Boost
+local function toggleAntiLag()
+    activeFunctions.antiLag = not activeFunctions.antiLag
+    
+    if activeFunctions.antiLag then
+        -- Salvar configurações originais
+        originalSettings.QualityLevel = settings().Rendering.QualityLevel
+        originalSettings.Shadows = settings().Rendering.Shadows
+        originalSettings.GraphicsQualityLevel = settings().Rendering.GraphicsQualityLevel
+        
+        -- Aplicar otimizações
+        settings().Rendering.QualityLevel = 1
+        settings().Rendering.Shadows = false
+        settings().Rendering.GraphicsQualityLevel = 1
+        
+        -- Remover efeitos visuais
+        for _, effect in pairs(Workspace:GetDescendants()) do
+            if effect:IsA("ParticleEmitter") or effect:IsA("Smoke") or 
+               effect:IsA("Fire") or effect:IsA("Sparkles") then
+                effect.Enabled = false
+            end
+        end
+    else
+        -- Restaurar configurações
+        if originalSettings.QualityLevel then
+            settings().Rendering.QualityLevel = originalSettings.QualityLevel
+        end
+        if originalSettings.Shadows ~= nil then
+            settings().Rendering.Shadows = originalSettings.Shadows
+        end
+        if originalSettings.GraphicsQualityLevel then
+            settings().Rendering.GraphicsQualityLevel = originalSettings.GraphicsQualityLevel
+        end
+        
+        -- Reativar efeitos
+        for _, effect in pairs(Workspace:GetDescendants()) do
+            if effect:IsA("ParticleEmitter") or effect:IsA("Smoke") or 
+               effect:IsA("Fire") or effect:IsA("Sparkles") then
+                effect.Enabled = true
+            end
+        end
+    end
+end
+
+-- 9. ESP Player + Line
+local function updateESP()
+    for _, box in pairs(espBoxes) do
+        box:Destroy()
+    end
+    espBoxes = {}
+    
+    if activeFunctions.esp then
+        coroutine.wrap(function()
+            while activeFunctions.esp do
+                for _, player in pairs(Players:GetPlayers()) do
+                    if player ~= game.Players.LocalPlayer and player.Character then
+                        local char = player.Character
+                        local humanoid = char:FindFirstChild("Humanoid")
+                        local root = char:FindFirstChild("HumanoidRootPart")
+                        
+                        if humanoid and root then
+                            -- Criar caixa ESP
+                            local espBox = espBoxes[player.Name]
+                            if not espBox then
+                                espBox = Instance.new("BoxHandleAdornment")
+                                espBox.Name = "ESP_" .. player.Name
+                                espBox.Adornee = root
+                                espBox.AlwaysOnTop = true
+                                espBox.ZIndex = 10
+                                espBox.Size = Vector3.new(4, 6, 4)
+                                espBox.Color3 = Color3.new(1, 0, 0)
+                                espBox.Transparency = 0.7
+                                espBox.Parent = root
+                                
+                                espBoxes[player.Name] = espBox
+                                
+                                -- Criar linha
+                                local line = Instance.new("LineHandleAdornment")
+                                line.Name = "Line_" .. player.Name
+                                line.Adornee = Workspace.Terrain
+                                line.AlwaysOnTop = true
+                                line.ZIndex = 5
+                                line.Thickness = 2
+                                line.Color3 = Color3.new(0, 1, 0)
+                                line.Transparency = 0.5
+                                line.Parent = Workspace.Terrain
+                                
+                                -- Atualizar linha continuamente
+                                coroutine.wrap(function()
+                                    while activeFunctions.esp and line and line.Parent do
+                                        if root and character and character.HumanoidRootPart then
+                                            line.Length = (root.Position - character.HumanoidRootPart.Position).Magnitude
+                                            line.CFrame = CFrame.new(character.HumanoidRootPart.Position, root.Position)
+                                        end
+                                        task.wait(0.1)
+                                    end
+                                    line:Destroy()
+                                end)()
+                                
+                                -- Criar label com nome e distância
+                                local label = Instance.new("BillboardGui")
+                                label.Name = "Label_" .. player.Name
+                                label.Adornee = root
+                                label.AlwaysOnTop = true
+                                label.Size = UDim2.new(0, 200, 0, 50)
+                                label.StudsOffset = Vector3.new(0, 7, 0)
+                                label.Parent = root
+                                
+                                local textLabel = Instance.new("TextLabel")
+                                textLabel.Size = UDim2.new(1, 0, 1, 0)
+                                textLabel.BackgroundTransparency = 1
+                                textLabel.Text = player.Name .. "\n" .. 
+                                    math.floor((root.Position - character.HumanoidRootPart.Position).Magnitude) .. " studs"
+                                textLabel.TextColor3 = Color3.new(1, 1, 1)
+                                textLabel.TextSize = 14
+                                textLabel.Font = Enum.Font.GothamBold
+                                textLabel.Parent = label
+                            end
+                        end
+                    end
+                end
+                
+                -- Limpar ESP de jogadores que saíram
+                for name, box in pairs(espBoxes) do
+                    if not Players:FindFirstChild(name) then
+                        box:Destroy()
+                        espBoxes[name] = nil
+                    end
+                end
+                
+                task.wait(0.5)
+            end
+            
+            -- Limpar tudo quando ESP desativado
+            for _, box in pairs(espBoxes) do
+                box:Destroy()
+            end
+            espBoxes = {}
+        end)()
+    end
+end
+
+local function toggleESP()
+    activeFunctions.esp = not activeFunctions.esp
+    updateESP()
+end
+
+-- 10. Infinite Jump
+local function toggleInfiniteJump()
+    activeFunctions.infiniteJump = not activeFunctions.infiniteJump
+    
+    if activeFunctions.infiniteJump then
+        humanoid.JumpPower = 100
+        humanoid.UseJumpPower = true
+        
+        -- Anti-gravidade para queda lenta
+        local bodyForce = Instance.new("BodyForce")
+        bodyForce.Name = "AntiGravity"
+        bodyForce.Force = Vector3.new(0, Workspace.Gravity * rootPart:GetMass() * 0.7, 0)
+        bodyForce.Parent = rootPart
+        
+        -- Pulo infinito
+        UserInputService.JumpRequest:Connect(function()
+            if activeFunctions.infiniteJump then
+                humanoid:ChangeState(Enum.HumanoidStateType.Jumping)
+            end
+        end)
+    else
+        humanoid.JumpPower = 50
+        local antiGravity = rootPart:FindFirstChild("AntiGravity")
+        if antiGravity then
+            antiGravity:Destroy()
+        end
+    end
+end
+
+-- 11. Speed Boost
+local function toggleSpeedBoost()
+    activeFunctions.speedBoost = not activeFunctions.speedBoost
+    
+    if activeFunctions.speedBoost then
+        humanoid.WalkSpeed = 35
+    else
+        humanoid.WalkSpeed = 16
+    end
+end
+
+-- Sistema de Marcação de Posição
+markPositionButton.MouseButton1Click:Connect(function()
+    if savedPosition then
+        -- Mostrar notificação
+        local notification = Instance.new("TextLabel")
+        notification.Size = UDim2.new(1, -20, 0, 30)
+        notification.Position = UDim2.new(0, 10, 0, -40)
+        notification.BackgroundColor3 = Color3.fromRGB(244, 67, 54)
+        notification.BackgroundTransparency = 0.3
+        notification.Text = "Limpe a posição atual primeiro!"
+        notification.TextColor3 = TEXT_COLOR
+        notification.TextSize = 12
+        notification.Parent = panelFrame
+        
+        task.wait(2)
+        notification:Destroy()
+    else
+        savedPosition = rootPart.Position
+        
+        -- Criar marcador visual
+        local marker = Instance.new("Part")
+        marker.Name = "PositionMarker"
+        marker.Size = Vector3.new(3, 3, 3)
+        marker.Position = savedPosition
+        marker.Anchored = true
+        marker.CanCollide = false
+        marker.Material = Enum.Material.Neon
+        marker.Color = Color3.new(0, 1, 0)
+        marker.Transparency = 0.5
+        marker.Parent = Workspace
+        
+        -- Notificação
+        local notification = Instance.new("TextLabel")
+        notification.Size = UDim2.new(1, -20, 0, 30)
+        notification.Position = UDim2.new(0, 10, 0, -40)
+        notification.BackgroundColor3 = Color3.fromRGB(76, 175, 80)
+        notification.BackgroundTransparency = 0.3
+        notification.Text = "Posição marcada!"
+        notification.TextColor3 = TEXT_COLOR
+        notification.TextSize = 12
+        notification.Parent = panelFrame
+        
+        task.wait(2)
+        notification:Destroy()
+    end
+end)
+
+clearPositionButton.MouseButton1Click:Connect(function()
+    savedPosition = nil
+    -- Limpar marcador visual
+    for _, part in pairs(Workspace:GetDescendants()) do
+        if part.Name == "PositionMarker" then
+            part:Destroy()
+        end
+    end
+end)
+
+-- CONFIGURAR EVENTOS DOS BOTÕES
+-- Círculo principal
+circleButton.MouseButton1Click:Connect(function()
+    isMainGuiVisible = not isMainGuiVisible
+    mainFrame.Visible = isMainGuiVisible
+end)
+
+-- Botões da GUI Principal
+closeButton.MouseButton1Click:Connect(function()
+    isMainGuiVisible = false
+    mainFrame.Visible = false
+    panelFrame.Visible = false
+    panelGui.Enabled = false
+    isPanelVisible = false
+end)
+
+minimizeButton.MouseButton1Click:Connect(function()
+    isPanelMinimized = true
+    mainContent.Visible = false
+    minimizeButton.Visible = false
+    maximizeButton.Visible = true
+    mainFrame.Size = UDim2.new(0, 300, 0, 30)
+end)
+
+maximizeButton.MouseButton1Click:Connect(function()
+    isPanelMinimized = false
+    mainContent.Visible = true
+    minimizeButton.Visible = true
+    maximizeButton.Visible = false
+    mainFrame.Size = UDim2.new(0, 300, 0, 220)
+end)
+
+-- Botão para abrir painel
+openPanelButton.MouseButton1Click:Connect(function()
+    isPanelVisible = not isPanelVisible
+    panelFrame.Visible = isPanelVisible
+    panelGui.Enabled = isPanelVisible
+end)
+
+-- Configurar toggle buttons da GUI Principal
+mainButtons.xray[2].MouseButton1Click:Connect(toggleXRay)
+mainButtons.superBoost[2].MouseButton1Click:Connect(toggleSuperBoost)
+mainButtons.hitboxExpander[2].MouseButton1Click:Connect(toggleHitboxExpander)
+
+-- Configurar toggle buttons do Painel
+panelButtons.teleguided[2].MouseButton1Click:Connect(toggleTeleguided)
+panelButtons.tpTeleguided[2].MouseButton1Click:Connect(toggleTPTeleguided)
+panelButtons.desyncV1[2].MouseButton1Click:Connect(toggleDesyncV1)
+panelButtons.desyncV2[2].MouseButton1Click:Connect(toggleDesyncV2)
+panelButtons.antiLag[2].MouseButton1Click:Connect(toggleAntiLag)
+panelButtons.esp[2].MouseButton1Click:Connect(toggleESP)
+panelButtons.infiniteJump[2].MouseButton1Click:Connect(toggleInfiniteJump)
+panelButtons.speedBoost[2].MouseButton1Click:Connect(toggleSpeedBoost)
+
+-- Atualizar visual dos toggle buttons
+game:GetService("RunService").Heartbeat:Connect(function()
+    -- GUI Principal
+    for name, button in pairs(mainButtons) do
+        if name ~= "openPanel" and activeFunctions[name] ~= nil then
+            local toggleButton = button[2]
+            if activeFunctions[name] then
+                toggleButton.BackgroundColor3 = Color3.fromRGB(76, 175, 80)
+                toggleButton.Text = "ON"
+            else
+                toggleButton.BackgroundColor3 = Color3.fromRGB(100, 100, 100)
+                toggleButton.Text = "OFF"
+            end
+        end
+    end
+    
+    -- Painel
+    local panelToggleButtons = {
+        teleguided = panelButtons.teleguided[2],
+        tpTeleguided = panelButtons.tpTeleguided[2],
+        desyncV1 = panelButtons.desyncV1[2],
+        desyncV2 = panelButtons.desyncV2[2],
+        antiLag = panelButtons.antiLag[2],
+        esp = panelButtons.esp[2],
+        infiniteJump = panelButtons.infiniteJump[2],
+        speedBoost = panelButtons.speedBoost[2]
+    }
+    
+    for name, toggleButton in pairs(panelToggleButtons) do
+        if activeFunctions[name] then
+            toggleButton.BackgroundColor3 = Color3.fromRGB(76, 175, 80)
+            toggleButton.Text = "ON"
+        else
+            toggleButton.BackgroundColor3 = Color3.fromRGB(100, 100, 100)
+            toggleButton.Text = "OFF"
+        end
+    end
+end)
+
+-- Atualizar tamanho da hitbox
+hitboxInput:GetPropertyChangedSignal("Text"):Connect(function()
+    local size = tonumber(hitboxInput.Text)
+    if size and size > 0 then
+        activeFunctions.hitboxSize = size
+        if activeFunctions.hitboxExpander then
+            updateHitboxes()
+        end
+    end
+end)
+
+-- Sistema anti-perda de vida
+humanoid.HealthChanged:Connect(function()
+    if humanoid.Health < humanoid.MaxHealth then
+        humanoid.Health = humanoid.MaxHealth
+    end
+end)
+
+-- Configurar proteções iniciais
+setupProtections()
+
+-- Ajustar UI para diferentes dispositivos
+if UserInputService.TouchEnabled then
+    -- Mobile
+    circleButton.Size = UDim2.new(0, 80, 0, 80)
+    mainFrame.Size = UDim2.new(0, 350, 0, 250)
+    panelFrame.Size = UDim2.new(0, 350, 0, 500)
+else
+    -- PC
+    circleButton.Size = UDim2.new(0, 60, 0, 60)
+    mainFrame.Size = UDim2.new(0, 300, 0, 220)
+    panelFrame.Size = UDim2.new(0, 320, 0, 450)
+end
+
+-- Ajustar tamanho do scroll do painel
+panelScroll.CanvasSize = UDim2.new(0, 0, 0, (#toggleButtonsOrder + 2) * 60)
+
+print("Galaxy Hub v2.0 carregado com sucesso!")
+print("GUI Principal: 4 funções")
+print("Painel: " .. (#toggleButtonsOrder + 2) .. " funções")
+print("Siga @galaxyscripts8 no TKK")
